@@ -472,23 +472,35 @@ best_params_lr = create_study(objective_lr)
 best_lr = LogisticRegression(**best_params_lr)
 y_pred_lr = best_lr.fit(x_train, y_train).predict(x_test)
 
+
 # SGDClassifier
 def objective_sgd(trial):
+    # Define hyperparameters to optimize
     params = {
-        'loss': trial.suggest_categorical('loss', ['hinge', 'log', 'modified_huber']),
+        'loss': trial.suggest_categorical('loss', ['hinge', 'log_loss', 'modified_huber']),  # Updated 'log' to 'log_loss'
         'penalty': trial.suggest_categorical('penalty', ['l1', 'l2', 'elasticnet']),
         'alpha': trial.suggest_loguniform('alpha', 1e-6, 1e-1),
         'learning_rate': trial.suggest_categorical('learning_rate', ['constant', 'optimal', 'invscaling', 'adaptive']),
         'eta0': trial.suggest_loguniform('eta0', 1e-5, 1e-1),
     }
+
+    # Initialize the classifier with hyperparameters
     clf = SGDClassifier(**params, random_state=42)
+
+    # Train the classifier on the training data
     clf.fit(x_train, y_train)
+    
+    # Make predictions on the test data
     y_pred = clf.predict(x_test)
+    
+    # Calculate F1 score as the objective to maximize
     f1 = f1_score(y_test, y_pred)
+
     return f1
 
+# Create study and optimize
 best_params_sgd = create_study(objective_sgd)
-best_sgd = SGDClassifier(**best_params_sgd)
+best_sgd = SGDClassifier(**best_params_sgd, random_state=42)
 y_pred_sgd = best_sgd.fit(x_train, y_train).predict(x_test)
 
 # Voting Classifier
