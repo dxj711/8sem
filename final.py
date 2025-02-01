@@ -330,19 +330,36 @@ best_params_rf = create_study(objective_rf)
 best_rf = RandomForestClassifier(**best_params_rf, random_state=42)
 y_pred_rf = best_rf.fit(x_train, y_train).predict(x_test)
 
-# AdaBoost
+
+#Adaboost
 def objective_ab(trial):
+    # Define the hyperparameters to optimize
     params = {
-        'n_estimators': trial.suggest_int("n_estimators", 50, 200),
-        'learning_rate': trial.suggest_float("learning_rate", 0.01, 1.0),
-        'algorithm': trial.suggest_categorical("algorithm", ["SAMME", "SAMME.R"]),
+        'n_estimators': trial.suggest_int("n_estimators", 50, 200),  # Number of weak learners
+        'learning_rate': trial.suggest_float("learning_rate", 0.01, 1.0),  # Learning rate
+        'algorithm': trial.suggest_categorical("algorithm", ["SAMME"]),  # Only 'SAMME' is allowed
     }
-    model = AdaBoostClassifier(**params, random_state=42)
+
+    # Create an AdaBoostClassifier with the suggested hyperparameters
+    model = AdaBoostClassifier(
+        n_estimators=params['n_estimators'],
+        learning_rate=params['learning_rate'],
+        algorithm=params['algorithm'],
+        random_state=42
+    )
+
+    # Train the model
     model.fit(x_train, y_train)
+
+    # Make predictions on the validation set
     y_pred = model.predict(x_test)
+
+    # Calculate F1 score as the objective to maximize
     f1 = f1_score(y_test, y_pred)
+
     return f1
 
+# Create study and optimize
 best_params_ab = create_study(objective_ab)
 best_ab = AdaBoostClassifier(**best_params_ab, random_state=42)
 y_pred_ab = best_ab.fit(x_train, y_train).predict(x_test)
