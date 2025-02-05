@@ -29,6 +29,19 @@ st.title("Proactive Maintenance Analysis")
 filename = "predictive_maintenance_dataset.csv"
 df = pd.read_csv(filename)
 
+# Allow user to select columns
+st.subheader("Select Columns for Analysis")
+all_columns = df.columns.tolist()
+selected_columns = st.multiselect('Select columns to include in the analysis', all_columns, default=all_columns)
+df = df[selected_columns]
+
+# Allow selection of specific columns for Metric7 and Metric8 if available
+if 'metric7' in df.columns and 'metric8' in df.columns:
+    metric7_column = st.selectbox('Select the column for Metric7', options=df.columns, index=df.columns.get_loc('metric7'))
+    metric8_column = st.selectbox('Select the column for Metric8', options=df.columns, index=df.columns.get_loc('metric8'))
+else:
+    metric7_column, metric8_column = None, None
+
 # EDA
 st.header("Exploratory Data Analysis (EDA)")
 
@@ -39,29 +52,34 @@ st.write("Dataset Shape:", df.shape)
 df.drop_duplicates(inplace=True)
 st.write("Dataset Shape after dropping duplicates:", df.shape)
 
-# Scatter plot
-st.subheader("Scatter Plot between Metric7 and Metric8")
-fig, ax = plt.subplots(figsize=(10, 6))
-ax.scatter(df['metric7'], df['metric8'], alpha=0.5)
-ax.set_title('Scatter Plot between Metric7 and Metric8')
-ax.set_xlabel('Metric7')
-ax.set_ylabel('Metric8')
-ax.grid(True)
-st.pyplot(fig)
+# Conditional operations on Metric7 and Metric8
+if metric7_column and metric8_column:
+    # Scatter plot
+    st.subheader(f"Scatter Plot between {metric7_column} and {metric8_column}")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.scatter(df[metric7_column], df[metric8_column], alpha=0.5)
+    ax.set_title(f'Scatter Plot between {metric7_column} and {metric8_column}')
+    ax.set_xlabel(metric7_column)
+    ax.set_ylabel(metric8_column)
+    ax.grid(True)
+    st.pyplot(fig)
 
-# Log transformation
-for num in ["2","3","4","7","8","9"]:
-    df[f'metric{num}'] = np.log1p(df[f'metric{num}'])
+    # Log transformation
+    df[metric7_column] = np.log1p(df[metric7_column])
+    df[metric8_column] = np.log1p(df[metric8_column])
 
-# Scatter plot after log transformation
-st.subheader("Scatter Plot between Metric7 and Metric8 after Log Transformation")
-fig, ax = plt.subplots(figsize=(10, 6))
-ax.scatter(df['metric7'], df['metric8'], alpha=0.5)
-ax.set_title('Scatter Plot between Metric7 and Metric8')
-ax.set_xlabel('Metric7')
-ax.set_ylabel('Metric8')
-ax.grid(True)
-st.pyplot(fig)
+    # Scatter plot after log transformation
+    st.subheader(f"Scatter Plot between {metric7_column} and {metric8_column} after Log Transformation")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.scatter(df[metric7_column], df[metric8_column], alpha=0.5)
+    ax.set_title(f'Scatter Plot between {metric7_column} and {metric8_column}')
+    ax.set_xlabel(metric7_column)
+    ax.set_ylabel(metric8_column)
+    ax.grid(True)
+    st.pyplot(fig)
+
+# Continue with the rest of the original code...
+
 
 # Drop metric8
 df.drop("metric8", axis=1, inplace=True)
@@ -93,6 +111,8 @@ fig, ax = plt.subplots(figsize=(12, 6))
 sns.countplot(x="device_model", data=df.loc[df["failure"] == 1], ax=ax)
 ax.set_title('Distribution of Failure (failure=1) with respect to Device')
 st.pyplot(fig)
+
+# Continue with the rest of the original code...
 
 # Drop Z1F2
 df.drop(df.loc[df["device_model"] == "Z1F2"].index, axis=0, inplace=True)
