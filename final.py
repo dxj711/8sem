@@ -29,19 +29,6 @@ st.title("Proactive Maintenance Analysis")
 filename = "predictive_maintenance_dataset.csv"
 df = pd.read_csv(filename)
 
-# Allow user to select columns
-st.subheader("Select Columns for Analysis")
-all_columns = df.columns.tolist()
-selected_columns = st.multiselect('Select columns to include in the analysis', all_columns, default=all_columns)
-df = df[selected_columns]
-
-# Allow selection of specific columns for Metric7 and Metric8 if available
-if 'metric7' in df.columns and 'metric8' in df.columns:
-    metric7_column = st.selectbox('Select the column for Metric7', options=df.columns, index=df.columns.get_loc('metric7'))
-    metric8_column = st.selectbox('Select the column for Metric8', options=df.columns, index=df.columns.get_loc('metric8'))
-else:
-    metric7_column, metric8_column = None, None
-
 # EDA
 st.header("Exploratory Data Analysis (EDA)")
 
@@ -52,34 +39,29 @@ st.write("Dataset Shape:", df.shape)
 df.drop_duplicates(inplace=True)
 st.write("Dataset Shape after dropping duplicates:", df.shape)
 
-# Conditional operations on Metric7 and Metric8
-if metric7_column and metric8_column:
-    # Scatter plot
-    st.subheader(f"Scatter Plot between {metric7_column} and {metric8_column}")
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.scatter(df[metric7_column], df[metric8_column], alpha=0.5)
-    ax.set_title(f'Scatter Plot between {metric7_column} and {metric8_column}')
-    ax.set_xlabel(metric7_column)
-    ax.set_ylabel(metric8_column)
-    ax.grid(True)
-    st.pyplot(fig)
+# Scatter plot
+st.subheader("Scatter Plot between Metric7 and Metric8")
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.scatter(df['metric7'], df['metric8'], alpha=0.5)
+ax.set_title('Scatter Plot between Metric7 and Metric8')
+ax.set_xlabel('Metric7')
+ax.set_ylabel('Metric8')
+ax.grid(True)
+st.pyplot(fig)
 
-    # Log transformation
-    df[metric7_column] = np.log1p(df[metric7_column])
-    df[metric8_column] = np.log1p(df[metric8_column])
+# Log transformation
+for num in ["2","3","4","7","8","9"]:
+    df[f'metric{num}'] = np.log1p(df[f'metric{num}'])
 
-    # Scatter plot after log transformation
-    st.subheader(f"Scatter Plot between {metric7_column} and {metric8_column} after Log Transformation")
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.scatter(df[metric7_column], df[metric8_column], alpha=0.5)
-    ax.set_title(f'Scatter Plot between {metric7_column} and {metric8_column}')
-    ax.set_xlabel(metric7_column)
-    ax.set_ylabel(metric8_column)
-    ax.grid(True)
-    st.pyplot(fig)
-
-# Continue with the rest of the original code...
-
+# Scatter plot after log transformation
+st.subheader("Scatter Plot between Metric7 and Metric8 after Log Transformation")
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.scatter(df['metric7'], df['metric8'], alpha=0.5)
+ax.set_title('Scatter Plot between Metric7 and Metric8')
+ax.set_xlabel('Metric7')
+ax.set_ylabel('Metric8')
+ax.grid(True)
+st.pyplot(fig)
 
 # Drop metric8
 df.drop("metric8", axis=1, inplace=True)
@@ -102,7 +84,7 @@ summarize_data(df)
 
 # Device model extraction
 df["device_model"] = df["device"].apply(lambda x: x[:4])
-df["device_rest"] = df["device"].apply(lambda x: x[4:])
+df["device_rest"] =  df["device"].apply(lambda x: x[4:])
 df.drop("device", axis=1, inplace=True)
 
 # Distribution plots
@@ -111,8 +93,6 @@ fig, ax = plt.subplots(figsize=(12, 6))
 sns.countplot(x="device_model", data=df.loc[df["failure"] == 1], ax=ax)
 ax.set_title('Distribution of Failure (failure=1) with respect to Device')
 st.pyplot(fig)
-
-# Continue with the rest of the original code...
 
 # Drop Z1F2
 df.drop(df.loc[df["device_model"] == "Z1F2"].index, axis=0, inplace=True)
@@ -592,6 +572,68 @@ st.write(f"Precision: {best_precision:.4f}")
 st.write(f"Recall: {best_recall:.4f}")
 st.write(f"F1 Score: {best_f1:.4f}")
 st.write(f"Accuracy: {best_accuracy:.4f}")
+
+
+# Predictive Maintenance Scheduling
+st.header("Predictive Maintenance Scheduling")
+
+# Ensure the best model (identified earlier) is used for predictions
+if best_model == "Model Gradient Boosting":
+    best_final_model = best_gb
+elif best_model == "Model Random Forest":
+    best_final_model = best_rf
+elif best_model == "Model AdaBoost":
+    best_final_model = best_ab
+elif best_model == "Model Extra Tree":
+    best_final_model = best_etc
+elif best_model == "Decison Tree":
+    best_final_model = best_dt
+elif best_model == "KNN":
+    best_final_model = best_knn
+elif best_model == "GaussianNB":
+    best_final_model = best_gnb
+elif best_model == "BernoulliNB":
+    best_final_model = best_bnb
+elif best_model == "SVC":
+    best_final_model = best_svc
+elif best_model == "LogisticRegression":
+    best_final_model = best_lr
+elif best_model == "SGDClassifier":
+    best_final_model = best_sgd
+elif best_model == "Hard Voting Classifier":
+    best_final_model = voting_clf
+else:
+    st.write("No best model found. Please check model evaluation results.")
+    best_final_model = None
+
+# Predict failure probability and schedule maintenance
+if best_final_model:
+    try:
+        # Drop 'failure' column if it exists before making predictions
+        df_features = df.drop(columns=["failure"], errors="ignore")
+
+        # Ensure the number of samples is correct
+        if df_features.shape[0] == 0:
+            st.write("Error: No valid data for prediction.")
+        else:
+            failure_probabilities = best_final_model.predict_proba(df_features)[:, 1]
+            df["failure_probability"] = failure_probabilities
+
+            # Define a threshold for scheduling maintenance
+            maintenance_threshold = st.slider("Set Failure Probability Threshold for Maintenance", 0.5, 1.0, 0.8)
+
+            upcoming_maintenance = df[df["failure_probability"] > maintenance_threshold]
+
+            st.subheader("Machines Recommended for Maintenance")
+            if not upcoming_maintenance.empty:
+                st.write("The following machines have a high probability of failure and should be scheduled for maintenance:")
+                st.dataframe(upcoming_maintenance[["failure_probability"] + list(df_features.columns)])
+            else:
+                st.write("No immediate maintenance required based on the selected threshold.")
+    except Exception as e:
+        st.write(f"Error during prediction: {str(e)}")
+
+
 
 # ROC Curve
 st.header("ROC Curve")
