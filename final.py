@@ -5,6 +5,8 @@ import seaborn as sns
 import warnings
 warnings.filterwarnings("ignore")
 import streamlit as st
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dropout, Dense
 
 # Import machine learning models
 from sklearn.naive_bayes import GaussianNB, BernoulliNB
@@ -20,6 +22,8 @@ from imblearn.under_sampling import RandomUnderSampler
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import VotingClassifier
 from sklearn.metrics import roc_curve, auc
+
+
 import optuna
 
 # Streamlit app title
@@ -194,8 +198,18 @@ df['month'] = df['date'].dt.month
 df['week'] = df['date'].dt.isocalendar().week
 df = df.drop(['date'], axis=1)
 
-# One-hot encoding
-df = pd.get_dummies(df, drop_first=True)
+# Feature selection using Random Forest
+X = df.drop(columns=['failure'])
+y = df['failure']
+rf = RandomForestClassifier(n_estimators=100, random_state=42)
+rf.fit(X, y)
+feature_importances = pd.Series(rf.feature_importances_, index=X.columns).sort_values(ascending=False)
+selected_features = feature_importances[feature_importances > 0.01].index.tolist()
+
+# Filter dataset with important features
+X_filtered = df[selected_features]
+y_filtered = df['failure']
+
 
 # Undersampling
 X = df.copy()
@@ -217,16 +231,25 @@ sns.countplot(data=under_sample, x='failure', ax=ax)
 ax.set_title("Distribution of 'failure'")
 st.pyplot(fig)
 
-# Train-test split and standardization
-X_norm = under_sample.drop(['failure'], axis=1)
-y_norm = under_sample['failure']
-x_train, x_test, y_train, y_test = train_test_split(X_norm, y_norm, test_size=0.2, random_state=42)
+# Undersampling for balancing data
+rus = RandomUnderSampler(random_state=42)
+X_resampled, y_resampled = rus.fit_resample(X_filtered, y_filtered)
+
+# Train-test split
+x_train, x_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42)
+
 scaler = StandardScaler()
 x_train = scaler.fit_transform(x_train)
 x_test = scaler.transform(x_test)
 
 # Model evaluation
 st.header("Model Evaluation")
+
+
+# Reshape data for LSTM
+x_train_lstm = x_train.reshape(x_train.shape[0], x_train.shape[1], 1)
+x_test_lstm = x_test.reshape(x_test.shape[0], x_test.shape[1], 1)
+
 
 def evaluate_model(x_train, y_train, x_test, y_test):
     classifiers = [
@@ -292,6 +315,10 @@ def create_study(objective):
     st.write(f'Best hyperparameters: {best_params}')
     st.write(f'Best f1 score: {best_f1}')
     return best_params
+
+
+
+
 
 # GradientBoosting
 def objective_gb(trial):
@@ -498,6 +525,48 @@ def objective_sgd(trial):
 
     return f1
 
+
+
+
+# Build LSTM model
+model = Sequential([
+    LSTM(50, return_sequences=True, input_shape=(x_train.shape[1], 1)),
+    Dropout(0.2),
+    LSTM(50),
+    Dropout(0.2),
+    Dense(1, activation='sigmoid')
+])
+
+# Compile model
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
+# Train model
+model.fit(x_train_lstm, y_train, epochs=20, batch_size=32, validation_data=(x_test_lstm, y_test))
+
+# Model evaluation
+y_pred_lstm = (model.predict(x_test_lstm) > 0.5).astype(int)
+
+
+# Calculate evaluation metrics
+accuracy_lstm = accuracy_score(y_test, y_pred_lstm)
+precision_lstm = precision_score(y_test, y_pred_lstm)
+recall_lstm = recall_score(y_test, y_pred_lstm)
+f1_lstm = f1_score(y_test, y_pred_lstm)
+
+# Print evaluation metrics
+st.write("LSTM Model Evaluation Metrics:")
+st.write(f"Accuracy: {accuracy_lstm:.4f}")
+st.write(f"Precision: {precision_lstm:.4f}")
+st.write(f"Recall: {recall_lstm:.4f}")
+st.write(f"F1 Score: {f1_lstm:.4f}")
+
+
+
+
+
+
+
+
 # Create study and optimize
 best_params_sgd = create_study(objective_sgd)
 best_sgd = SGDClassifier(**best_params_sgd, random_state=42)
@@ -545,6 +614,7 @@ models = [
     ("LogisticRegression", y_pred_lr),
     ("SGDClassifier", y_pred_sgd),
     ("Hard Voting Classifier", y_pred_vh),
+    ("LSTM Model", y_pred_lstm)
 ]
 
 for (model_name, y_pred), ax in zip(models, axes.flatten()):
