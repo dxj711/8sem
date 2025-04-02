@@ -3,24 +3,157 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader
 warnings.filterwarnings("ignore")
 import streamlit as st
 
-# Import machine learning models
-from sklearn.naive_bayes import GaussianNB, BernoulliNB
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.linear_model import SGDClassifier
-from sklearn.svm import SVC
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier, AdaBoostClassifier, ExtraTreesClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
-from sklearn.model_selection import train_test_split
-from imblearn.under_sampling import RandomUnderSampler
-from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import VotingClassifier
-from sklearn.metrics import roc_curve, auc
-import optuna
+# ----------------------- LSTM Integration Start -----------------------
+# Import necessary PyTorch libraries
+class CNN_BiLSTMAttentionNet(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, dropout):
+        super(CNN_BiLSTMAttentionNet, self).__init__()
+        # Convolutional front-end to capture local patterns
+        self.conv1 = nn.Conv1d(in_channels=input_size, out_channels=64, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm1d(64)
+        self.conv2 = nn.Conv1d(in_channels=64, out_channels=64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm1d(64)
+        self.relu = nn.ReLU()
+        # LSTM: note that after CNN, the feature dimension becomes 64
+        self.lstm = nn.LSTM(
+            input_size=64,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout,
+            bidirectional=True
+        )
+        # Attention mechanism
+        self.attention = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, 1)
+        )
+        # Fully-connected layers for classification
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, 1)
+        )
+
+    def forward(self, x):
+        # x: (batch, seq_length, input_size)
+        # Permute to (batch, input_size, seq_length) for CNN
+        x = x.permute(0, 2, 1)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.relu(x)
+        # Permute back: (batch, seq_length, 64)
+        x = x.permute(0, 2, 1)
+        lstm_out, _ = self.lstm(x)  # (batch, seq_length, hidden_size*2)
+        # Apply attention over time steps
+        attn_weights = torch.softmax(self.attention(lstm_out), dim=1)  # (batch, seq_length, 1)
+        context = torch.sum(attn_weights * lstm_out, dim=1)  # (batch, hidden_size*2)
+        out = self.fc(context)
+        return out
+
+
+class LSTMClassifier:
+    def __init__(self, input_size, sequence_length=20, hidden_size=256, num_layers=3,
+                 dropout=0.4, epochs=200, batch_size=64, learning_rate=0.0002,
+                 patience=15, verbose=True, device=None):
+        self.input_size = input_size
+        self.sequence_length = sequence_length  # This must match your evaluation slice
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.learning_rate = learning_rate
+        self.patience = patience
+        self.verbose = verbose
+        self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = CNN_BiLSTMAttentionNet(input_size, hidden_size, num_layers, dropout).to(self.device)
+
+    def create_sequences(self, X, y=None, is_prediction=False):
+        sequences = []
+        X_array = np.array(X)
+        total_samples = len(X_array)
+        seq_len = self.sequence_length
+        # Generate (total_samples - seq_len + 1) sequences
+        if is_prediction:
+            for i in range(total_samples - seq_len + 1):
+                sequences.append(X_array[i:i + seq_len])
+            return np.array(sequences)
+        else:
+            targets = []
+            for i in range(total_samples - seq_len + 1):
+                sequences.append(X_array[i:i + seq_len])
+                targets.append(np.array(y)[i + seq_len - 1])
+            return np.array(sequences), np.array(targets)
+
+    def fit(self, X, y):
+        X_seq, y_seq = self.create_sequences(X, y)
+        X_tensor = torch.tensor(X_seq, dtype=torch.float32).to(self.device)
+        y_tensor = torch.tensor(y_seq.reshape(-1, 1), dtype=torch.float32).to(self.device)
+        
+        dataset = torch.utils.data.TensorDataset(X_tensor, y_tensor)
+        loader = torch.utils.data.DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+        
+        criterion = nn.BCEWithLogitsLoss()
+        optimizer = optim.AdamW(self.model.parameters(), lr=self.learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5, verbose=self.verbose)
+        
+        best_loss = np.inf
+        patience_counter = 0
+        for epoch in range(self.epochs):
+            self.model.train()
+            epoch_loss = 0.0
+            for batch_X, batch_y in loader:
+                optimizer.zero_grad()
+                outputs = self.model(batch_X)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                optimizer.step()
+                epoch_loss += loss.item() * batch_X.size(0)
+            epoch_loss /= len(loader.dataset)
+            scheduler.step(epoch_loss)
+            if self.verbose:
+                st.write(f'Epoch [{epoch+1}/{self.epochs}], Loss: {epoch_loss:.4f}')
+            if epoch_loss < best_loss:
+                best_loss = epoch_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+            if patience_counter >= self.patience:
+                if self.verbose:
+                    st.write(f"Early stopping at epoch {epoch+1}")
+                break
+
+    def predict_proba(self, X):
+        self.model.eval()
+        X_seq = self.create_sequences(X, is_prediction=True)
+        X_tensor = torch.tensor(X_seq, dtype=torch.float32).to(self.device)
+        with torch.no_grad():
+            logits = self.model(X_tensor)
+            probs = torch.sigmoid(logits).cpu().numpy().flatten()
+        # This produces (N - sequence_length + 1) predictions,
+        # which should match y_test.values[sequence_length - 1:] in your evaluation.
+        return np.vstack([1 - probs, probs]).T
+
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        return (proba[:, 1] >= 0.5).astype(int)
+
+
+# ----------------------- LSTM Integration End -----------------------
 
 # Streamlit app title
 st.title("Proactive Maintenance Analysis")
@@ -201,6 +334,7 @@ df = pd.get_dummies(df, drop_first=True)
 X = df.copy()
 Y = df["failure"]
 X.drop("failure", axis=1, inplace=True)
+from imblearn.under_sampling import RandomUnderSampler
 rus = RandomUnderSampler(random_state=42)
 X_resampled, y_resampled = rus.fit_resample(X, Y)
 under_sample = X_resampled.copy()
@@ -218,6 +352,8 @@ ax.set_title("Distribution of 'failure'")
 st.pyplot(fig)
 
 # Train-test split and standardization
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 X_norm = under_sample.drop(['failure'], axis=1)
 y_norm = under_sample['failure']
 x_train, x_test, y_train, y_test = train_test_split(X_norm, y_norm, test_size=0.2, random_state=42)
@@ -225,10 +361,19 @@ scaler = StandardScaler()
 x_train = scaler.fit_transform(x_train)
 x_test = scaler.transform(x_test)
 
-# Model evaluation
+# ----------------------- Model Evaluation including LSTM -----------------------
 st.header("Model Evaluation")
 
 def evaluate_model(x_train, y_train, x_test, y_test):
+    # List of traditional classifiers
+    from sklearn.naive_bayes import GaussianNB, BernoulliNB
+    from sklearn.neighbors import KNeighborsClassifier
+    from sklearn.linear_model import SGDClassifier
+    from sklearn.svm import SVC
+    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier, AdaBoostClassifier, ExtraTreesClassifier
+    
     classifiers = [
         GradientBoostingClassifier(),
         RandomForestClassifier(),
@@ -238,11 +383,11 @@ def evaluate_model(x_train, y_train, x_test, y_test):
         KNeighborsClassifier(),
         GaussianNB(),
         BernoulliNB(),
-        SVC(),
+        SVC(probability=True),  # set probability=True for predict_proba
         LogisticRegression(),
         SGDClassifier(),
     ]
-
+    
     classifier_names = [
         'GradientBoost',
         'RandomForest',
@@ -256,23 +401,48 @@ def evaluate_model(x_train, y_train, x_test, y_test):
         'LogisticRegression',
         'SGD',
     ]
+    
+    # Append the LSTM model into the evaluation framework.
+    sequence_length = 5  # Choose suitable sequence length for your data
 
+    lstm_model_for_eval = LSTMClassifier(
+        input_size=x_train.shape[1],
+        sequence_length=sequence_length,
+        epochs=50, 
+        hidden_size=64, 
+        num_layers=2, 
+        dropout=0.3,
+        patience=5,
+        learning_rate=0.001, 
+        verbose=False
+    )
+    classifiers.append(lstm_model_for_eval)
+    classifier_names.append("LSTM")
+    
     metrics = pd.DataFrame(columns=['Accuracy', 'Precision', 'Recall', 'F1'], index=classifier_names)
-
+    
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
     for i, clf in enumerate(classifiers):
         clf.fit(x_train, y_train)
         y_pred = clf.predict(x_test)
 
-        accuracy = accuracy_score(y_test, y_pred)
-        precision = precision_score(y_test, y_pred)
-        recall = recall_score(y_test, y_pred)
-        f1 = f1_score(y_test, y_pred)
+        # Adjustment for LSTM predictions length mismatch
+        if classifier_names[i] == "LSTM":
+            y_test_aligned = y_test.values[sequence_length - 1:]  # fix length mismatch
+        else:
+            y_test_aligned = y_test.values
+
+        accuracy = accuracy_score(y_test_aligned, y_pred)
+        precision = precision_score(y_test_aligned, y_pred)
+        recall = recall_score(y_test_aligned, y_pred)
+        f1 = f1_score(y_test_aligned, y_pred)
 
         metrics.loc[classifier_names[i], 'Accuracy'] = accuracy
         metrics.loc[classifier_names[i], 'Precision'] = precision
         metrics.loc[classifier_names[i], 'Recall'] = recall
         metrics.loc[classifier_names[i], 'F1'] = f1
 
+    
     metrics = metrics.sort_values(by='Accuracy', ascending=False)
     return metrics
 
@@ -282,6 +452,7 @@ st.write(metrics)
 
 # Hyperparameter tuning using Optuna
 st.header("Hyperparameter Tuning using Optuna")
+import optuna
 
 def create_study(objective):
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -301,13 +472,16 @@ def objective_gb(trial):
         'max_depth': trial.suggest_int('max_depth', 3, 8),
         'min_samples_split': trial.suggest_float('min_samples_split', 0.1, 1.0),
     }
+    from sklearn.ensemble import GradientBoostingClassifier
     clf = GradientBoostingClassifier(**params, random_state=42)
     clf.fit(x_train, y_train)
     y_pred = clf.predict(x_test)
+    from sklearn.metrics import f1_score
     f1 = f1_score(y_test, y_pred)
     return f1
 
 best_params_gb = create_study(objective_gb)
+from sklearn.ensemble import GradientBoostingClassifier
 best_gb = GradientBoostingClassifier(**best_params_gb, random_state=42)
 y_pred_gb = best_gb.fit(x_train, y_train).predict(x_test)
 
@@ -320,52 +494,48 @@ def objective_rf(trial):
         'min_samples_leaf': trial.suggest_uniform('min_samples_leaf', 0.1, 0.5),
         'max_features': trial.suggest_categorical('max_features', ['log2', 'sqrt']),
     }
+    from sklearn.ensemble import RandomForestClassifier
     clf = RandomForestClassifier(**params, random_state=42)
     clf.fit(x_train, y_train)
     y_pred = clf.predict(x_test)
+    from sklearn.metrics import f1_score
     f1 = f1_score(y_test, y_pred)
     return f1
 
 best_params_rf = create_study(objective_rf)
+from sklearn.ensemble import RandomForestClassifier
 best_rf = RandomForestClassifier(**best_params_rf, random_state=42)
 y_pred_rf = best_rf.fit(x_train, y_train).predict(x_test)
 
 
-#Adaboost
+# Adaboost
 def objective_ab(trial):
-    # Define the hyperparameters to optimize
+    from sklearn.ensemble import AdaBoostClassifier
     params = {
-        'n_estimators': trial.suggest_int("n_estimators", 50, 200),  # Number of weak learners
-        'learning_rate': trial.suggest_float("learning_rate", 0.01, 1.0),  # Learning rate
-        'algorithm': trial.suggest_categorical("algorithm", ["SAMME"]),  # Only 'SAMME' is allowed
+        'n_estimators': trial.suggest_int("n_estimators", 50, 200),
+        'learning_rate': trial.suggest_float("learning_rate", 0.01, 1.0),
+        'algorithm': trial.suggest_categorical("algorithm", ["SAMME"]),
     }
-
-    # Create an AdaBoostClassifier with the suggested hyperparameters
     model = AdaBoostClassifier(
         n_estimators=params['n_estimators'],
         learning_rate=params['learning_rate'],
         algorithm=params['algorithm'],
         random_state=42
     )
-
-    # Train the model
     model.fit(x_train, y_train)
-
-    # Make predictions on the validation set
     y_pred = model.predict(x_test)
-
-    # Calculate F1 score as the objective to maximize
+    from sklearn.metrics import f1_score
     f1 = f1_score(y_test, y_pred)
-
     return f1
 
-# Create study and optimize
 best_params_ab = create_study(objective_ab)
+from sklearn.ensemble import AdaBoostClassifier
 best_ab = AdaBoostClassifier(**best_params_ab, random_state=42)
 y_pred_ab = best_ab.fit(x_train, y_train).predict(x_test)
 
 # ExtraTrees
 def objective_etc(trial):
+    from sklearn.ensemble import ExtraTreesClassifier
     params = {
         'n_estimators': trial.suggest_int("n_estimators", 100, 1000),
         'max_depth': trial.suggest_int("max_depth", 1, 32),
@@ -375,15 +545,18 @@ def objective_etc(trial):
     clf = ExtraTreesClassifier(**params, random_state=42)
     clf.fit(x_train, y_train)
     y_pred = clf.predict(x_test)
+    from sklearn.metrics import f1_score
     f1 = f1_score(y_test, y_pred)
     return f1
 
 best_params_etc = create_study(objective_etc)
+from sklearn.ensemble import ExtraTreesClassifier
 best_etc = ExtraTreesClassifier(**best_params_etc, random_state=42)
 y_pred_etc = best_etc.fit(x_train, y_train).predict(x_test)
 
 # Decision Tree
 def objective_dt(trial):
+    from sklearn.tree import DecisionTreeClassifier
     params = {
         'criterion': trial.suggest_categorical('criterion', ['gini', 'entropy']),
         'max_depth': trial.suggest_int('max_depth', 2, 32, log=True),
@@ -393,15 +566,18 @@ def objective_dt(trial):
     clf = DecisionTreeClassifier(**params, random_state=42)
     clf.fit(x_train, y_train)
     y_pred = clf.predict(x_test)
+    from sklearn.metrics import f1_score
     f1 = f1_score(y_test, y_pred)
     return f1
 
 best_params_dt = create_study(objective_dt)
+from sklearn.tree import DecisionTreeClassifier
 best_dt = DecisionTreeClassifier(**best_params_dt, random_state=42)
 y_pred_dt = best_dt.fit(x_train, y_train).predict(x_test)
 
 # KNN
 def objective_knn(trial):
+    from sklearn.neighbors import KNeighborsClassifier
     params = {
         'n_neighbors': trial.suggest_int('n_neighbors', 3, 20),
         'weights': trial.suggest_categorical('weights', ['uniform', 'distance']),
@@ -410,19 +586,23 @@ def objective_knn(trial):
     clf = KNeighborsClassifier(**params)
     clf.fit(x_train, y_train)
     y_pred = clf.predict(x_test)
+    from sklearn.metrics import f1_score
     f1 = f1_score(y_test, y_pred)
     return f1
 
 best_params_knn = create_study(objective_knn)
+from sklearn.neighbors import KNeighborsClassifier
 best_knn = KNeighborsClassifier(**best_params_knn)
 y_pred_knn = best_knn.fit(x_train, y_train).predict(x_test)
 
 # GaussianNB
+from sklearn.naive_bayes import GaussianNB
 best_gnb = GaussianNB()
 y_pred_gnb = best_gnb.fit(x_train, y_train).predict(x_test)
 
 # BernoulliNB
 def objective_bnb(trial):
+    from sklearn.naive_bayes import BernoulliNB
     params = {
         'alpha': trial.suggest_loguniform('alpha', 1e-10, 1.0),
         'binarize': trial.suggest_float('binarize', 0.0, 1.0),
@@ -431,33 +611,39 @@ def objective_bnb(trial):
     clf = BernoulliNB(**params)
     clf.fit(x_train, y_train)
     y_pred = clf.predict(x_test)
+    from sklearn.metrics import f1_score
     f1 = f1_score(y_test, y_pred)
     return f1
 
 best_params_bnb = create_study(objective_bnb)
+from sklearn.naive_bayes import BernoulliNB
 best_bnb = BernoulliNB(**best_params_bnb)
 y_pred_bnb = best_bnb.fit(x_train, y_train).predict(x_test)
 
 # SVC
 def objective_svc(trial):
+    from sklearn.svm import SVC
     params = {
         'C': trial.suggest_loguniform('C', 1e-3, 1e3),
         'kernel': trial.suggest_categorical('kernel', ['linear', 'poly', 'rbf', 'sigmoid']),
         'degree': trial.suggest_int('degree', 2, 5) if trial.params['kernel'] == 'poly' else 1,
         'gamma': trial.suggest_categorical('gamma', ['scale', 'auto']) if trial.params['kernel'] in ['rbf', 'poly', 'sigmoid'] else 'scale',
     }
-    clf = SVC(**params, random_state=42)
+    clf = SVC(**params, random_state=42, probability=True)
     clf.fit(x_train, y_train)
     y_pred = clf.predict(x_test)
+    from sklearn.metrics import f1_score
     f1 = f1_score(y_test, y_pred)
     return f1
 
 best_params_svc = create_study(objective_svc)
-best_svc = SVC(**best_params_svc)
+from sklearn.svm import SVC
+best_svc = SVC(**best_params_svc, probability=True)
 y_pred_svc = best_svc.fit(x_train, y_train).predict(x_test)
 
 # LogisticRegression
 def objective_lr(trial):
+    from sklearn.linear_model import LogisticRegression
     params = {
         'C': trial.suggest_loguniform('C', 1e-5, 1e5),
         'solver': trial.suggest_categorical('solver', ['liblinear', 'lbfgs']),
@@ -465,53 +651,67 @@ def objective_lr(trial):
     clf = LogisticRegression(**params, random_state=42)
     clf.fit(x_train, y_train)
     y_pred = clf.predict(x_test)
+    from sklearn.metrics import f1_score
     f1 = f1_score(y_test, y_pred)
     return f1
 
 best_params_lr = create_study(objective_lr)
+from sklearn.linear_model import LogisticRegression
 best_lr = LogisticRegression(**best_params_lr)
 y_pred_lr = best_lr.fit(x_train, y_train).predict(x_test)
 
 
 # SGDClassifier
 def objective_sgd(trial):
-    # Define hyperparameters to optimize
+    from sklearn.linear_model import SGDClassifier
     params = {
-        'loss': trial.suggest_categorical('loss', ['hinge', 'log_loss', 'modified_huber']),  # Updated 'log' to 'log_loss'
+        'loss': trial.suggest_categorical('loss', ['hinge', 'log_loss', 'modified_huber']),
         'penalty': trial.suggest_categorical('penalty', ['l1', 'l2', 'elasticnet']),
         'alpha': trial.suggest_loguniform('alpha', 1e-6, 1e-1),
         'learning_rate': trial.suggest_categorical('learning_rate', ['constant', 'optimal', 'invscaling', 'adaptive']),
         'eta0': trial.suggest_loguniform('eta0', 1e-5, 1e-1),
     }
-
-    # Initialize the classifier with hyperparameters
     clf = SGDClassifier(**params, random_state=42)
-
-    # Train the classifier on the training data
     clf.fit(x_train, y_train)
-    
-    # Make predictions on the test data
     y_pred = clf.predict(x_test)
-    
-    # Calculate F1 score as the objective to maximize
+    from sklearn.metrics import f1_score
     f1 = f1_score(y_test, y_pred)
-
     return f1
 
-# Create study and optimize
 best_params_sgd = create_study(objective_sgd)
+from sklearn.linear_model import SGDClassifier
 best_sgd = SGDClassifier(**best_params_sgd, random_state=42)
 y_pred_sgd = best_sgd.fit(x_train, y_train).predict(x_test)
 
 # Voting Classifier
+from sklearn.ensemble import VotingClassifier
 voting_clf = VotingClassifier(estimators=[('gb', best_gb), ('rf', best_rf), ('ab', best_ab), ('etc', best_etc), ('dt', best_dt), ('knn', best_knn), ('gnb', best_gnb), ('bnb', best_bnb), ('svc', best_svc), ('lr', best_lr), ('sgd', best_sgd)], voting='hard')
 voting_clf.fit(x_train, y_train)
 y_pred_vh = voting_clf.predict(x_test)
 
-# Model comparison
+# ------------------- Train LSTM separately for Model Comparison -------------------
+# Train an instance of LSTMClassifier to obtain predictions for the comparison block.
+lstm_model = LSTMClassifier(
+    input_size=x_train.shape[1],
+    sequence_length=5,  # Adjust if you used a different value elsewhere
+    epochs=50, 
+    hidden_size=64, 
+    num_layers=2, 
+    dropout=0.3,
+    patience=5,
+    learning_rate=0.001, 
+    verbose=False
+)
+
+lstm_model.fit(x_train, y_train)
+y_pred_lstm = lstm_model.predict(x_test)
+
+# ----------------------- Model Comparison -----------------------
 st.header("Model Comparison")
 
+from sklearn.metrics import confusion_matrix
 def calculate_evaluation_metrics(y_true, y_pred):
+    from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
     precision = precision_score(y_true, y_pred)
     recall = recall_score(y_true, y_pred)
     f1 = f1_score(y_true, y_pred)
@@ -520,7 +720,8 @@ def calculate_evaluation_metrics(y_true, y_pred):
 
 def plot_confusion_matrix(ax, y_true, y_pred, title):
     cm = confusion_matrix(y_true, y_pred)
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", linewidths=0.5, linecolor="black", cbar=False, xticklabels=["Non-Failure", "Failure"], yticklabels=["Non-Failure", "Failure"], ax=ax)
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", linewidths=0.5, linecolor="black", cbar=False, 
+                xticklabels=["Non-Failure", "Failure"], yticklabels=["Non-Failure", "Failure"], ax=ax)
     ax.set_xlabel("Predicted")
     ax.set_ylabel("True")
     ax.set_title(title)
@@ -545,6 +746,7 @@ models = [
     ("LogisticRegression", y_pred_lr),
     ("SGDClassifier", y_pred_sgd),
     ("Hard Voting Classifier", y_pred_vh),
+    ("LSTM", y_pred_lstm)
 ]
 
 for (model_name, y_pred), ax in zip(models, axes.flatten()):
@@ -555,7 +757,7 @@ for (model_name, y_pred), ax in zip(models, axes.flatten()):
     st.write(f"Recall: {recall:.4f}")
     st.write(f"F1 Score: {f1:.4f}")
     st.write(f"Accuracy: {accuracy:.4f}")
-
+    
     if f1 > best_f1:
         best_f1 = f1
         best_model = model_name
@@ -572,7 +774,6 @@ st.write(f"Precision: {best_precision:.4f}")
 st.write(f"Recall: {best_recall:.4f}")
 st.write(f"F1 Score: {best_f1:.4f}")
 st.write(f"Accuracy: {best_accuracy:.4f}")
-
 
 # Predictive Maintenance Scheduling
 st.header("Predictive Maintenance Scheduling")
@@ -602,6 +803,8 @@ elif best_model == "SGDClassifier":
     best_final_model = best_sgd
 elif best_model == "Hard Voting Classifier":
     best_final_model = voting_clf
+elif best_model == "LSTM":
+    best_final_model = lstm_model
 else:
     st.write("No best model found. Please check model evaluation results.")
     best_final_model = None
@@ -611,11 +814,12 @@ if best_final_model:
     try:
         # Drop 'failure' column if it exists before making predictions
         df_features = df.drop(columns=["failure"], errors="ignore")
-
         # Ensure the number of samples is correct
         if df_features.shape[0] == 0:
             st.write("Error: No valid data for prediction.")
         else:
+            # For models expecting probabilities, call predict_proba.
+            # Note: For some classifiers, this may require using a scaler.
             failure_probabilities = best_final_model.predict_proba(df_features)[:, 1]
             df["failure_probability"] = failure_probabilities
 
@@ -633,10 +837,9 @@ if best_final_model:
     except Exception as e:
         st.write(f"Error during prediction: {str(e)}")
 
-
-
 # ROC Curve
 st.header("ROC Curve")
+from sklearn.metrics import roc_curve, auc
 fpr, tpr, thresholds = roc_curve(y_test, y_pred_ab)
 roc_auc = auc(fpr, tpr)
 st.write("AUC:", roc_auc)
@@ -648,7 +851,3 @@ ax.set_ylabel('True Positive Rate')
 ax.set_title('Receiver Operating Characteristic (ROC) Curve')
 ax.legend(loc='lower right')
 st.pyplot(fig)
-
-
-
-
