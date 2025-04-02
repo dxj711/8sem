@@ -6,3 +6,4 @@ optuna
 scikit-learn
 imblearn
 tensorflow
+torch
