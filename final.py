@@ -716,7 +716,7 @@ def calculate_evaluation_metrics(y_true, y_pred):
     recall = recall_score(y_true, y_pred)
     f1 = f1_score(y_true, y_pred)
     accuracy = accuracy_score(y_true, y_pred)
-    #return precision, recall, f1, accuracy
+    return precision, recall, f1, accuracy
 
 def plot_confusion_matrix(ax, y_true, y_pred, title):
     cm = confusion_matrix(y_true, y_pred)
