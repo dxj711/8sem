@@ -345,11 +345,11 @@ st.subheader("Undersampled Data")
 st.write(under_sample.sample(10))
 
 # Distribution of failure in undersampled data
-st.subheader("Distribution of 'failure' in Undersampled Data")
+#st.subheader("Distribution of 'failure' in Undersampled Data")
 fig, ax = plt.subplots(figsize=(6, 4))
 sns.countplot(data=under_sample, x='failure', ax=ax)
 ax.set_title("Distribution of 'failure'")
-st.pyplot(fig)
+#st.pyplot(fig)
 
 # Train-test split and standardization
 from sklearn.model_selection import train_test_split
@@ -716,7 +716,7 @@ def calculate_evaluation_metrics(y_true, y_pred):
     recall = recall_score(y_true, y_pred)
     f1 = f1_score(y_true, y_pred)
     accuracy = accuracy_score(y_true, y_pred)
-    return precision, recall, f1, accuracy
+    #return precision, recall, f1, accuracy
 
 def plot_confusion_matrix(ax, y_true, y_pred, title):
     cm = confusion_matrix(y_true, y_pred)
